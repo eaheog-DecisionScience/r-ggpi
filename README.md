@@ -13,7 +13,7 @@ Traditional Permutation Feature Importance (PFI) breaks down under multi-colline
 ## Key Features
 
 - **Collinearity Resilience:** Groups redundant features into disconnected MST coalition branches and permutes them jointly, preserving real-world data manifolds.
-- **Target-Aware Branch Anchoring:** Prevents low-importance "hitchhiker" variables from draining attribution credit away from primary predictive features within a shared cluster.
+- **Target-Aware Branch Anchoring:** Prevents low-importance "hitchhiker" variables from draining attribution score away from primary predictive features within a shared cluster.
 - **Extreme Scalability:** Achieves up to an **84x speedup over TreeSHAP** and **5.6x over standard PFI** on large datasets ($N = 20,000$).
 - **Smart Complexity Gating:** Automatically detects runtime workload dimensionality ($\mathcal{K} = N \cdot M \cdot R$) to bypass Python multiprocessing overhead on light tasks and scale seamlessly on heavy enterprise tables.
 - **Scikit-Learn API Integration:** Fully compatible with Scikit-Learn pipelines via `BaseEstimator` and `TransformerMixin`.

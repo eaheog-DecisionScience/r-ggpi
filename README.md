@@ -6,7 +6,7 @@
 
 **R-GGPI** is a fast, collinearity-resilient feature attribution and selection package designed for complex tabular machine learning models.
 
-Traditional Permutation Feature Importance (PFI) breaks down under multi-collinearity because independent shuffling destroys joint feature distributions, while game-theoretic alternatives like TreeSHAP suffer from severe combinatorial computational explosion on large datasets. R-GGPI bridges this gap by combining **Minimum Spanning Tree (MST) graph partitioning**, **Target-Aware Branch Anchoring**, and an **Adaptive Complexity Cost Gate** for intelligent multi-core parallelization.
+Traditional Permutation Feature Importance (PFI) breaks down under multi-collinearity because independent shuffling destroys joint feature distributions, while game-theoretic alternatives like TreeSHAP suffer from severe combinatorial computational explosion on large datasets. R-GGPI bridges this gap by combining notions/ideas like- **Minimum Spanning Tree (MST) graph partitioning**, **Target-Aware Branch Anchoring**, and an **Adaptive Complexity Cost Gate** for intelligent multi-core parallelization.
 
 ---
 

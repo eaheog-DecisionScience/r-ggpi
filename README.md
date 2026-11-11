@@ -4,19 +4,25 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%+-%233776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Scikit-Learn Compatible](https://img.shields.io/badge/scikit--learn-compatible-%23F7931E.svg?logo=scikit-learn&logoColor=white)](https://scikit-learn.org/)
 
-**R-GGPI** is a fast, collinearity-resilient feature attribution and selection package designed for complex tabular machine learning models.
+**R-GGPI** is an adaptive, collinearity-resilient feature-importance and selection package for tabular models. It groups features into cohesive branches using stability-regularized correlation graphs and estimates the importance of each group by permuting its rows jointly.
 
-Traditional Permutation Feature Importance (PFI) breaks down under multi-collinearity because independent shuffling destroys joint feature distributions, while game-theoretic alternatives like TreeSHAP suffer from severe combinatorial computational explosion on large datasets. R-GGPI bridges this gap by combining **Minimum Spanning Tree (MST) graph partitioning**, **Target-Aware Branch Anchoring**, and an **Adaptive Complexity Cost Gate** for intelligent multi-core parallelization.
+Jointly permuting a group's columns preserves their observed joint distribution within that group while breaking their association with the target. Groups are constructed adaptively using Minimum Spanning Trees (MST) with statistically sound correlation thresholding, maximum group size constraints, cross-resample stability analysis, and out-of-distribution (OOD) distributional shift minimization.
 
 ---
 
 ## Key Features
 
-- **Collinearity Resilience:** Groups redundant features into disconnected MST coalition branches and permutes them jointly, preserving real-world data manifolds.
-- **Target-Aware Branch Anchoring:** Prevents low-importance "hitchhiker" variables from draining attribution credit away from primary predictive features within a shared cluster.
-- **Extreme Scalability:** Achieves up to an **84x speedup over TreeSHAP** and **5.6x over standard PFI** on large datasets ($N = 20,000$).
-- **Smart Complexity Gating:** Automatically detects runtime workload dimensionality ($\mathcal{K} = N \cdot M \cdot R$) to bypass Python multiprocessing overhead on light tasks and scale seamlessly on heavy enterprise tables.
+- **Adaptive Grouping & Sizing:** Dynamically determines minimum correlation significance thresholds and caps group sizes (`max_group_size='auto'`), eliminating the MST "chaining effect" that erroneously lumps disparate features or noise into giant monolithic clusters.
+- **Distributional Shift Diagnostics:** Measures cross-group correlation energy (`group_distribution_shifts`) to monitor and minimize out-of-distribution (OOD) extrapolation risk when groups are permuted.
+- **Stability Analysis:** Uses bootstrap subsampling (`stability_resamples=5`) to penalize fluctuating correlations and report Signal-to-Noise Ratio (SNR) scores (`group_stability_scores`) for every feature group.
+- **Robust Multi-Criteria Selection:** `RGGPISelector` supports ranking and selecting groups via `selection_criterion='importance'`, `'stability'`, or `'robust'` (mean minus standard deviation).
+- **Non-Linear & Outlier Resilience:** Supports rank-based Spearman correlation (`correlation_method='spearman'`, default) and Pearson correlation.
+- **Group-level and per-feature scores:** `group_importances_mean`, `group_importances_std`, and compatibility-weighted `importances_mean` / `importances_std`.
 - **Scikit-Learn API Integration:** Fully compatible with Scikit-Learn pipelines via `BaseEstimator` and `TransformerMixin`.
+
+Pass `random_state` to `RGGPIExplainer`, `RGGPISelector`, or `r_ggpi_importance` to make permutation repeats and stability subsampling reproducible.
+
+`RGGPISelector` selects complete groups with positive group importance by default and raises a `ValueError` if none are positive. When `max_features` is set, it is a strict upper bound: groups are considered in descending importance order and groups that do not fit are skipped, never split. If no positively scoring group fits the limit, `fit` raises a `ValueError`; increase the limit or use `max_features=None`.
 
 ---
 

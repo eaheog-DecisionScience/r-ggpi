@@ -25,11 +25,15 @@ def main():
     model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
     model.fit(X_train, y_train)
 
-    result = RGGPIExplainer(model, n_repeats=3).explain(X_test, y_test)
+    result = RGGPIExplainer(model, n_repeats=10, random_state=42).explain(
+        X_test, y_test
+    )
     print("Feature importance (highest first):")
     print(result.importances_mean.sort_values(ascending=False).head())
 
-    selector = RGGPISelector(model, n_repeats=3, max_features=5)
+    selector = RGGPISelector(
+        model, n_repeats=10, max_features=8, random_state=42
+    )
     selector.fit(X_train, y_train)
     X_train_selected = selector.transform(X_train)
     X_test_selected = selector.transform(X_test)

@@ -1,6 +1,7 @@
+from numbers import Integral
+
 import numpy as np
 import pandas as pd
-import networkx as nx
 from joblib import Parallel, delayed
 from sklearn.utils import check_random_state
 from .utils import (
@@ -77,6 +78,11 @@ class RGGPIExplainer:
   stability_penalty : float (default=1.0)
       Penalty factor for correlation standard deviation across subsamples
       (stable_corr = max(0, mean - penalty * std)).
+  eval_subsample_size : int or None (default=2000)
+      Maximum number of samples used for permutation scoring. When the dataset
+      is larger, a random subsample of this size is drawn for scoring to reduce
+      computation while preserving importance ranking fidelity. Set to None to
+      use all samples (no subsampling).
   n_jobs : int (default=1)
       Number of CPU cores to use if complexity threshold is met.
   parallel_threshold : int (default=1_000_000)
@@ -97,10 +103,18 @@ class RGGPIExplainer:
       correlation_method="spearman",
       stability_resamples=5,
       stability_penalty=1.0,
+      eval_subsample_size=2000,
       n_jobs=1,
       parallel_threshold=1_000_000,
       random_state=None,
   ):
+    if eval_subsample_size is not None and (
+        isinstance(eval_subsample_size, bool)
+        or not isinstance(eval_subsample_size, Integral)
+        or eval_subsample_size < 1
+    ):
+      raise ValueError("eval_subsample_size must be a positive integer or None.")
+
     self.model = model
     self.pruning_percentile = pruning_percentile
     self.n_repeats = n_repeats
@@ -110,24 +124,29 @@ class RGGPIExplainer:
     self.correlation_method = correlation_method
     self.stability_resamples = stability_resamples
     self.stability_penalty = stability_penalty
+    self.eval_subsample_size = eval_subsample_size
     self.n_jobs = n_jobs
     self.parallel_threshold = parallel_threshold
     self.random_state = random_state
 
   def _compute_single_repeat(
       self,
-      X,
+      X_np,
       y,
       baseline_score,
       communities,
       active_features,
       node_variances,
       target_corrs,
+      col_name_to_idx,
+      feature_cols,
       seed,
+      needs_dataframe,
   ):
-    importances = {feat: 0.0 for feat in X.columns}
+    importances = {feat: 0.0 for feat in feature_cols}
     group_importances = {}
     rng = np.random.default_rng(seed)
+    n_samples = X_np.shape[0]
 
     for group_index, community in enumerate(communities):
       nodes = sorted(
@@ -144,13 +163,23 @@ class RGGPIExplainer:
 
       group_name = f"group_{group_index}"
       group_features = [active_features[node] for node in nodes]
-      row_permutation = rng.permutation(len(X))
-      X_permuted = X.copy()
-      X_permuted.loc[:, group_features] = X.iloc[
-          row_permutation
-      ].loc[:, group_features].to_numpy()
+      col_indices = [col_name_to_idx[f] for f in group_features]
+      row_permutation = rng.permutation(n_samples)
 
-      perm_score = self.model.score(X_permuted, y)
+      # In-place column swap on the pre-allocated NumPy buffer
+      orig_cols = X_np[:, col_indices].copy()
+      X_np[:, col_indices] = X_np[row_permutation[:, None], col_indices]
+
+      if needs_dataframe:
+        X_score = pd.DataFrame(X_np, columns=feature_cols)
+      else:
+        X_score = X_np
+
+      perm_score = self.model.score(X_score, y)
+
+      # Restore original columns
+      X_np[:, col_indices] = orig_cols
+
       group_drop = baseline_score - perm_score
       group_importances[group_name] = group_drop
 
@@ -165,7 +194,10 @@ class RGGPIExplainer:
     feature_cols = X.columns.tolist()
     n_samples, n_features = X.shape
 
-    baseline_score = self.model.score(X, y)
+    # Detect whether model.score() needs a DataFrame (custom scorers) or
+    # can work with raw NumPy arrays (sklearn estimators)
+    needs_dataframe = self._detect_needs_dataframe(X, y)
+
     target_corrs = compute_target_correlations(X, y, feature_cols)
 
     # Variance Screening
@@ -220,12 +252,41 @@ class RGGPIExplainer:
         float(group_shifts.mean()) if not group_shifts.empty else 0.0
     )
 
+    # --- Optimization: Subsample for scoring ---
+    random_state = check_random_state(self.random_state)
+
+    # Convert to NumPy once and keep a writable buffer for in-place permutation.
+    X_np_full = X.to_numpy(dtype=np.float64, copy=False)
+    col_name_to_idx = {col: i for i, col in enumerate(feature_cols)}
+
+    is_subsampled = (
+        self.eval_subsample_size is not None
+        and n_samples > self.eval_subsample_size
+    )
+    if is_subsampled:
+      eval_idx = random_state.choice(
+          n_samples, size=self.eval_subsample_size, replace=False
+      )
+      X_np_eval = X_np_full[eval_idx].copy()
+      y_eval = y[eval_idx]
+    else:
+      X_np_eval = X_np_full.copy()
+      y_eval = y
+
+    if not is_subsampled:
+      baseline_eval = self.model.score(X, y)
+    elif needs_dataframe:
+      baseline_eval = self.model.score(
+          pd.DataFrame(X_np_eval, columns=feature_cols), y_eval
+      )
+    else:
+      baseline_eval = self.model.score(X_np_eval, y_eval)
+
     # Smart Gating Proxy
-    complexity_score = n_samples * n_features * self.n_repeats
+    complexity_score = X_np_eval.shape[0] * n_features * self.n_repeats
     use_parallel = (
         self.n_jobs != 1 and complexity_score > self.parallel_threshold
     )
-    random_state = check_random_state(self.random_state)
     seeds = random_state.randint(
         np.iinfo(np.int32).max, size=self.n_repeats
     )
@@ -233,14 +294,17 @@ class RGGPIExplainer:
     if use_parallel:
       parallel_results = Parallel(n_jobs=self.n_jobs)(
           delayed(self._compute_single_repeat)(
-              X,
-              y,
-              baseline_score,
+              X_np_eval.copy(),  # each worker gets its own copy
+              y_eval,
+              baseline_eval,
               communities,
               active_features,
               node_variances,
               target_corrs,
+              col_name_to_idx,
+              feature_cols,
               seed,
+              needs_dataframe,
           )
           for seed in seeds
       )
@@ -260,14 +324,17 @@ class RGGPIExplainer:
       }
       for seed in seeds:
         feature_result, group_result = self._compute_single_repeat(
-            X,
-            y,
-            baseline_score,
+            X_np_eval,
+            y_eval,
+            baseline_eval,
             communities,
             active_features,
             node_variances,
             target_corrs,
+            col_name_to_idx,
+            feature_cols,
             seed,
+            needs_dataframe,
         )
         for feat, val in feature_result.items():
           importance_accumulator[feat].append(val)
@@ -312,6 +379,20 @@ class RGGPIExplainer:
         grouping_metadata=metadata,
     )
 
+  def _detect_needs_dataframe(self, X, y):
+    """Probe whether the model's score() method requires a DataFrame.
+
+    sklearn estimators work fine with NumPy arrays (and are faster).
+    Custom scorers that access columns by name need a DataFrame.
+    """
+    try:
+      X_np_probe = X.iloc[:2].to_numpy(dtype=np.float64)
+      y_probe = y[:2]
+      self.model.score(X_np_probe, y_probe)
+      return False
+    except (TypeError, KeyError, AttributeError, IndexError, ValueError):
+      return True
+
 
 def r_ggpi_importance(
     model,
@@ -325,6 +406,7 @@ def r_ggpi_importance(
     correlation_method="spearman",
     stability_resamples=5,
     stability_penalty=1.0,
+    eval_subsample_size=2000,
     n_jobs=1,
     random_state=None,
 ):
@@ -339,6 +421,7 @@ def r_ggpi_importance(
       correlation_method=correlation_method,
       stability_resamples=stability_resamples,
       stability_penalty=stability_penalty,
+      eval_subsample_size=eval_subsample_size,
       n_jobs=n_jobs,
       random_state=random_state,
   )

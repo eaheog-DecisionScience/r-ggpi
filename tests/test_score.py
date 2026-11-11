@@ -90,3 +90,53 @@ def test_variance_screening_keeps_full_model_input_schema():
 
   assert set(result.importances_mean.index) == set(X.columns)
   assert result.importances_mean["constant"] == 0.0
+
+
+def test_permutation_scoring_uses_configured_sample_size():
+  rng = np.random.default_rng(42)
+  signal = rng.normal(size=250)
+  X = pd.DataFrame({"signal": signal, "duplicate": signal.copy()})
+
+  class RecordingScorer:
+    def __init__(self):
+      self.scored_rows = []
+
+    def score(self, features, target):
+      self.scored_rows.append(len(features))
+      return np.corrcoef(features.iloc[:, 0], target)[0, 1]
+
+  model = RecordingScorer()
+  RGGPIExplainer(
+      model,
+      n_repeats=2,
+      eval_subsample_size=37,
+      random_state=42,
+  ).explain(X, signal)
+
+  assert model.scored_rows.count(37) == 3
+  assert all(row_count in (2, 37) for row_count in model.scored_rows)
+
+
+def test_default_permutation_scoring_caps_at_2000_rows():
+  rng = np.random.default_rng(42)
+  signal = rng.normal(size=2100)
+  X = pd.DataFrame({"signal": signal, "duplicate": signal.copy()})
+
+  class RecordingScorer:
+    def __init__(self):
+      self.scored_rows = []
+
+    def score(self, features, target):
+      self.scored_rows.append(len(features))
+      return np.corrcoef(features.iloc[:, 0], target)[0, 1]
+
+  model = RecordingScorer()
+  RGGPIExplainer(
+      model,
+      n_repeats=1,
+      stability_resamples=1,
+      random_state=42,
+  ).explain(X, signal)
+
+  assert model.scored_rows.count(2000) == 2
+  assert model.scored_rows[0] == 2

@@ -48,6 +48,10 @@ class RGGPISelector(BaseEstimator, TransformerMixin):
       Number of data subsamples used to evaluate correlation stability.
   stability_penalty : float (default=1.0)
       Penalty factor for correlation standard deviation across subsamples.
+  eval_subsample_size : int or None (default=2000)
+      Maximum number of samples used for permutation scoring. When the dataset
+      is larger, a random subsample is drawn for scoring to reduce computation.
+      Set to None to use all samples.
   selection_criterion : str (default='importance')
       Group ranking criterion: 'importance' (mean score drop), 'stability'
       (signal-to-noise ratio), or 'robust' (mean - 1.0 * std).
@@ -72,6 +76,7 @@ class RGGPISelector(BaseEstimator, TransformerMixin):
       correlation_method="spearman",
       stability_resamples=5,
       stability_penalty=1.0,
+      eval_subsample_size=2000,
       selection_criterion="importance",
       n_jobs=1,
       random_state=None,
@@ -89,6 +94,7 @@ class RGGPISelector(BaseEstimator, TransformerMixin):
     self.correlation_method = correlation_method
     self.stability_resamples = stability_resamples
     self.stability_penalty = stability_penalty
+    self.eval_subsample_size = eval_subsample_size
     self.selection_criterion = selection_criterion
     self.n_jobs = n_jobs
     self.random_state = random_state
@@ -130,6 +136,7 @@ class RGGPISelector(BaseEstimator, TransformerMixin):
         correlation_method=self.correlation_method,
         stability_resamples=self.stability_resamples,
         stability_penalty=self.stability_penalty,
+        eval_subsample_size=self.eval_subsample_size,
         n_jobs=self.n_jobs,
         random_state=self.random_state,
     )

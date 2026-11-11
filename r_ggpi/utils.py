@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-import networkx as nx
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import minimum_spanning_tree, connected_components
 from sklearn.utils import check_random_state
 
 
@@ -97,7 +98,11 @@ def build_feature_groups(
     pruning_percentile=75.0,
     n_samples=None,
 ):
-  """Builds feature groups using MST with adaptive pruning and max group size constraints."""
+  """Builds feature groups using MST with adaptive pruning and max group size constraints.
+
+  Uses scipy.sparse.csgraph for MST computation (faster than NetworkX for dense
+  distance matrices).
+  """
   n_active = len(active_features)
   if n_active <= 1:
     communities = [[0]] if n_active == 1 else []
@@ -106,16 +111,23 @@ def build_feature_groups(
     }
     return communities, feature_groups, {}
 
+  # Build dense distance matrix and compute MST via scipy
   dist_matrix = np.clip(1.0 - corr_matrix, 0.0, 1.0)
-  G = nx.Graph()
-  for i in range(n_active):
-    G.add_node(i, name=active_features[i])
+  np.fill_diagonal(dist_matrix, 0.0)
+  # scipy minimum_spanning_tree treats explicit zeros in CSR as absent edges.
+  # Keep zero-distance edges as a tiny positive value in the sparse graph.
+  _EPSILON = 1e-12
+  dist_for_mst = dist_matrix.copy()
+  zero_rows, zero_cols = np.where(
+      (dist_matrix == 0) & ~np.eye(n_active, dtype=bool)
+  )
+  dist_for_mst[zero_rows, zero_cols] = _EPSILON
 
-  for i in range(n_active):
-    for j in range(i + 1, n_active):
-      G.add_edge(i, j, weight=dist_matrix[i, j])
+  dist_sparse = csr_matrix(dist_for_mst)
+  mst_sparse = minimum_spanning_tree(dist_sparse)
 
-  mst = nx.minimum_spanning_tree(G, weight="weight")
+  # Convert MST to a symmetric representation for pruning / component analysis
+  mst_sym = mst_sparse + mst_sparse.T  # make undirected
 
   metadata = {
       "grouping_method": grouping_method,
@@ -123,17 +135,17 @@ def build_feature_groups(
   }
 
   if grouping_method == "percentile":
-    edge_weights = [data["weight"] for _, _, data in mst.edges(data=True)]
-    if edge_weights:
+    edge_weights = np.where(mst_sparse.data == _EPSILON, 0.0, mst_sparse.data)
+    if len(edge_weights) > 0:
       cutoff_weight = np.percentile(edge_weights, pruning_percentile)
-      edges_to_remove = [
-          (u, v)
-          for u, v, data in mst.edges(data=True)
-          if data["weight"] > cutoff_weight
-      ]
-      mst.remove_edges_from(edges_to_remove)
-    communities = list(nx.connected_components(mst))
-    metadata["cutoff_distance"] = float(cutoff_weight) if edge_weights else 0.0
+      # Zero out edges above the cutoff (remove them)
+      mst_sym = mst_sym.tocsr()
+      effective_weights = np.where(mst_sym.data == _EPSILON, 0.0, mst_sym.data)
+      mst_sym.data[effective_weights > cutoff_weight] = 0
+      mst_sym.eliminate_zeros()
+    n_components, labels = connected_components(mst_sym, directed=False)
+    communities = _labels_to_communities(labels, n_components)
+    metadata["cutoff_distance"] = float(cutoff_weight) if len(edge_weights) > 0 else 0.0
   else:
     # Adaptive grouping
     if min_correlation == "auto":
@@ -147,12 +159,10 @@ def build_feature_groups(
 
     # Prune edges with correlation below effective threshold
     cutoff_dist = 1.0 - eff_min_corr
-    edges_to_remove = [
-        (u, v)
-        for u, v, data in mst.edges(data=True)
-        if data["weight"] > cutoff_dist
-    ]
-    mst.remove_edges_from(edges_to_remove)
+    mst_sym = mst_sym.tocsr()
+    effective_weights = np.where(mst_sym.data == _EPSILON, 0.0, mst_sym.data)
+    mst_sym.data[effective_weights > cutoff_dist] = 0
+    mst_sym.eliminate_zeros()
 
     # Determine max group size constraint
     if max_group_size == "auto":
@@ -164,26 +174,55 @@ def build_feature_groups(
     metadata["max_group_size"] = eff_max_group_size
 
     # Split oversized components along minimum-affinity (maximum-distance) edges
-    raw_communities = list(nx.connected_components(mst))
+    n_components, labels = connected_components(mst_sym, directed=False)
+    raw_communities = _labels_to_communities(labels, n_components)
+
     refined_communities = []
     for comm in raw_communities:
-      nodes = list(comm)
-      if len(nodes) <= eff_max_group_size:
-        refined_communities.append(nodes)
+      if len(comm) <= eff_max_group_size:
+        refined_communities.append(comm)
       else:
-        sub_g = mst.subgraph(nodes).copy()
+        # Iteratively remove heaviest edge in the sub-MST until all components
+        # are within the size limit. Work with the subgraph of the MST.
+        sub_nodes = sorted(comm)
+        node_to_local = {n: i for i, n in enumerate(sub_nodes)}
+        local_to_node = {i: n for n, i in node_to_local.items()}
+        n_sub = len(sub_nodes)
+
+        # Extract sub-MST as dense (small enough after initial pruning)
+        sub_adj = np.zeros((n_sub, n_sub))
+        cx = mst_sym.tocoo()
+        for r, c, v in zip(cx.row, cx.col, cx.data):
+          if r in node_to_local and c in node_to_local:
+            lr, lc = node_to_local[r], node_to_local[c]
+            sub_adj[lr, lc] = v
+            sub_adj[lc, lr] = v
+
         while True:
-          comps = list(nx.connected_components(sub_g))
-          oversized = [c for c in comps if len(c) > eff_max_group_size]
+          sub_sparse = csr_matrix(sub_adj)
+          n_c, sub_labels = connected_components(sub_sparse, directed=False)
+          sub_comms = _labels_to_communities(sub_labels, n_c)
+          oversized = [sc for sc in sub_comms if len(sc) > eff_max_group_size]
           if not oversized:
-            refined_communities.extend(comps)
+            for sc in sub_comms:
+              refined_communities.append([local_to_node[i] for i in sc])
             break
-          target_comp = max(oversized, key=len)
-          sub_comp_g = sub_g.subgraph(target_comp)
-          heaviest_edge = max(
-              sub_comp_g.edges(data=True), key=lambda x: x[2]["weight"]
-          )
-          sub_g.remove_edge(heaviest_edge[0], heaviest_edge[1])
+          target_comm = max(oversized, key=len)
+          # Find the heaviest edge within this component
+          best_edge = None
+          best_weight = -1.0
+          for i in target_comm:
+            for j in target_comm:
+              if j > i and sub_adj[i, j] > best_weight:
+                best_weight = sub_adj[i, j]
+                best_edge = (i, j)
+          if best_edge is None:
+            # No edges to remove; break out
+            for sc in sub_comms:
+              refined_communities.append([local_to_node[i] for i in sc])
+            break
+          sub_adj[best_edge[0], best_edge[1]] = 0
+          sub_adj[best_edge[1], best_edge[0]] = 0
 
     communities = refined_communities
 
@@ -196,3 +235,12 @@ def build_feature_groups(
   }
   metadata["n_groups"] = len(feature_groups)
   return communities, feature_groups, metadata
+
+
+def _labels_to_communities(labels, n_components):
+  """Convert scipy connected_components labels array to list of node-index lists."""
+  communities = [[] for _ in range(n_components)]
+  for node_idx, label in enumerate(labels):
+    communities[label].append(node_idx)
+  # Remove empty communities (shouldn't happen, but defensive)
+  return [c for c in communities if c]

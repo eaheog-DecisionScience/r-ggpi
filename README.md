@@ -18,6 +18,7 @@ Jointly permuting a group's columns preserves their observed joint distribution 
 - **Robust Multi-Criteria Selection:** `RGGPISelector` supports ranking and selecting groups via `selection_criterion='importance'`, `'stability'`, or `'robust'` (mean minus standard deviation).
 - **Non-Linear & Outlier Resilience:** Supports rank-based Spearman correlation (`correlation_method='spearman'`, default) and Pearson correlation.
 - **Group-level and per-feature scores:** `group_importances_mean`, `group_importances_std`, and compatibility-weighted `importances_mean` / `importances_std`.
+- **Faster permutation scoring:** Permutation importance is scored on at most 2,000 randomly selected rows by default, while grouping and correlation analysis still use all rows. Set `eval_subsample_size=None` to score all rows or provide a different positive integer cap.
 - **Scikit-Learn API Integration:** Fully compatible with Scikit-Learn pipelines via `BaseEstimator` and `TransformerMixin`.
 
 Pass `random_state` to `RGGPIExplainer`, `RGGPISelector`, or `r_ggpi_importance` to make permutation repeats and stability subsampling reproducible.

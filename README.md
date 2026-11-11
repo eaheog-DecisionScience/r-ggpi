@@ -6,7 +6,7 @@
 
 **R-GGPI** is an adaptive, collinearity-resilient feature-importance and selection package for tabular models. It groups features into cohesive branches using stability-regularized correlation graphs and estimates the importance of each group by permuting its rows jointly.
 
-Jointly permuting a group's columns preserves their observed joint distribution within that group while breaking their association with the target. Groups are constructed adaptively using Minimum Spanning Trees (MST) with statistically sound correlation thresholding, maximum group size constraints, cross-resample stability analysis, and out-of-distribution (OOD) distributional shift minimization.
+Jointly permuting a group's columns preserves their observed joint distribution within that group while breaking their association with the target. Groups are constructed adaptively using Minimum Spanning Trees (MST) with statistically sound correlation thresholding, maximum group size constraints, cross-resample stability analysis, and out-of-distribution (OOD) distributional shift minimization. Target-aware branch anchoring helps allocate group importance to predictive features, and a complexity gate avoids unnecessary multiprocessing overhead.
 
 ---
 
@@ -19,6 +19,8 @@ Jointly permuting a group's columns preserves their observed joint distribution 
 - **Non-Linear & Outlier Resilience:** Supports rank-based Spearman correlation (`correlation_method='spearman'`, default) and Pearson correlation.
 - **Group-level and per-feature scores:** `group_importances_mean`, `group_importances_std`, and compatibility-weighted `importances_mean` / `importances_std`.
 - **Faster permutation scoring:** Permutation importance is scored on at most 2,000 randomly selected rows by default, while grouping and correlation analysis still use all rows. Set `eval_subsample_size=None` to score all rows or provide a different positive integer cap.
+- **Collinearity Resilience:** Groups redundant features into MST branches and permutes them jointly.
+- **Smart Complexity Gating:** Uses workload size to avoid multiprocessing overhead on smaller tasks and parallelize larger ones.
 - **Scikit-Learn API Integration:** Fully compatible with Scikit-Learn pipelines via `BaseEstimator` and `TransformerMixin`.
 
 Pass `random_state` to `RGGPIExplainer`, `RGGPISelector`, or `r_ggpi_importance` to make permutation repeats and stability subsampling reproducible.
